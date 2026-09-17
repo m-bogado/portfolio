@@ -1,0 +1,12 @@
+# .NET
+bin/
+obj/
+*.user
+.vs/
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
