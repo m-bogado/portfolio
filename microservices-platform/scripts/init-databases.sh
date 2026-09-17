@@ -1,6 +1,6 @@
 #!/bin/bash
-# Se ejecuta automaticamente al crear el contenedor de Postgres (docker-entrypoint-initdb.d).
-# Crea una base de datos separada por servicio dentro de la misma instancia de Postgres.
+# Runs automatically when the Postgres container is created (docker-entrypoint-initdb.d).
+# Creates a separate database per service within the same Postgres instance.
 set -e
 
 for DB in users_db catalog_db orders_db; do

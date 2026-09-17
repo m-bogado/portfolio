@@ -1,38 +1,38 @@
-# Arquitectura — Microservices Platform (portfolio)
+# Architecture — Microservices Platform (portfolio)
 
-> Objetivo del proyecto: aprender a fondo decisiones de arquitectura e infraestructura
-> de microservicios en .NET, para poder explicarlas en una entrevista técnica —
-> no solo tener el código funcionando.
+> Project goal: learn microservices architecture and infrastructure decisions in .NET
+> in depth, so they can be explained in a technical interview —
+> not just have the code working.
 
-## Diagrama
+## Diagram
 
 ```
                                    ┌─────────────────────┐
-                                   │   Cliente (SPA /     │
+                                   │   Client (SPA /      │
                                    │   Postman / curl)    │
                                    └──────────┬───────────┘
                                               │ HTTPS
                                               ▼
                               ┌───────────────────────────────┐
                               │        API GATEWAY (YARP)      │
-                              │  - Valida JWT (una sola vez)   │
-                              │  - Enruta por path              │
-                              │  - Rate limiting centralizado   │
+                              │  - Validates JWT (once)        │
+                              │  - Routes by path               │
+                              │  - Centralized rate limiting     │
                               └───┬──────────┬──────────┬──────┘
                                   │          │          │
                      ┌────────────┘          │          └────────────┐
                      ▼                       ▼                       ▼
            ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────────┐
            │   Users.Api        │   │  Catalog.Api      │   │   Orders.Api          │
-           │  (login, emite     │   │  (CRUD productos) │   │  (crea pedidos,       │
-           │   JWT)             │   │                    │   │   consulta Catalog)   │
+           │  (login, issues    │   │  (product CRUD)   │   │  (creates orders,     │
+           │   JWT)             │   │                    │   │   queries Catalog)    │
            │  ┌──────────────┐  │   │  ┌──────────────┐ │   │  ┌──────────────┐    │
            │  │ users_db     │  │   │  │ catalog_db   │ │   │  │ orders_db    │    │
            │  │ (Postgres)   │  │   │  │ (Postgres)   │ │   │  │ (Postgres)   │    │
            │  └──────────────┘  │   │  └──────────────┘ │   │  └──────────────┘    │
            └──────────────────┘   └──────────────────┘   └──────────┬───────────┘
                                                                       │
-                                                        evento "OrderCreated"
+                                                        "OrderCreated" event
                                                            (RabbitMQ, async)
                                                                       │
                                                                       ▼
@@ -43,85 +43,85 @@
                                                                    │ WebSocket
                                                                    ▼
                                                         ┌──────────────────────┐
-                                                        │  Dashboard en vivo     │
+                                                        │  Live dashboard        │
                                                         └──────────────────────┘
 
-Todo orquestado con docker-compose (red interna, un contenedor por servicio + por DB + RabbitMQ)
+All orchestrated with docker-compose (internal network, one container per service + per DB + RabbitMQ)
 ```
 
-## Componentes
+## Components
 
-| Componente | Responsabilidad |
+| Component | Responsibility |
 |---|---|
-| `Users.Api` | Registro/login, emisión de JWT, DB propia (`users_db`) |
-| `Catalog.Api` | CRUD de productos, DB propia (`catalog_db`) |
-| `Orders.Api` | Crea pedidos, consulta a Catalog por HTTP, DB propia (`orders_db`), publica evento `OrderCreated` |
-| `Gateway` (YARP) | Único punto de entrada, valida JWT, enruta, rate limiting |
-| `Notifications.Api` | Consume `OrderCreated` de RabbitMQ, empuja por SignalR a clientes conectados |
-| RabbitMQ | Broker de mensajería para el evento `OrderCreated` |
-| Dashboard | Cliente mínimo conectado por SignalR para ver notificaciones en vivo |
+| `Users.Api` | Registration/login, JWT issuance, own DB (`users_db`) |
+| `Catalog.Api` | Product CRUD, own DB (`catalog_db`) |
+| `Orders.Api` | Creates orders, queries Catalog over HTTP, own DB (`orders_db`), publishes `OrderCreated` event |
+| `Gateway` (YARP) | Single entry point, validates JWT, routes, rate limiting |
+| `Notifications.Api` | Consumes `OrderCreated` from RabbitMQ, pushes to connected clients via SignalR |
+| RabbitMQ | Messaging broker for the `OrderCreated` event |
+| Dashboard | Minimal client connected via SignalR to see live notifications |
 
-## Decisiones tomadas y por qué
+## Decisions made and why
 
-### 1. Base de datos por servicio (no compartida)
-Cada servicio es dueño de su esquema → se puede cambiar sin coordinar deploys con otros
-servicios, y cada uno escala/migra de forma independiente.
-**Costo**: no hay JOIN SQL entre servicios — Orders le *pide* el dato a Catalog en vez de
-leerlo directo de su DB. Consistencia eventual en vez de transaccional.
+### 1. Database per service (not shared)
+Each service owns its schema → it can change without coordinating deploys with other
+services, and each one scales/migrates independently.
+**Cost**: no SQL JOIN across services — Orders *asks* Catalog for the data instead of
+reading it directly from its DB. Eventual consistency instead of transactional.
 
-### 2. JWT validado en el Gateway (no en cada servicio) — "perimeter trust"
-- **Pro**: un solo lugar valida firma/expiración/claims; los servicios confían en la red
-  interna de docker-compose.
-- **Contra**: si algo llama directo a un contenedor sin pasar por el Gateway, no hay
-  segunda validación. En producción a mayor escala (K8s, más superficie de ataque) esto
-  se combina con validación ligera en cada servicio o mTLS (zero-trust). Para este scope,
-  perimeter trust es la decisión estándar y correcta.
+### 2. JWT validated at the Gateway (not in each service) — "perimeter trust"
+- **Pro**: a single place validates signature/expiration/claims; the services trust the
+  internal docker-compose network.
+- **Con**: if something calls a container directly without going through the Gateway,
+  there is no second validation. In production at larger scale (K8s, more attack surface)
+  this is combined with lightweight validation in each service or mTLS (zero-trust). For
+  this scope, perimeter trust is the standard and correct decision.
 
-### 3. Gateway: YARP (no Ocelot)
+### 3. Gateway: YARP (not Ocelot)
 | | YARP | Ocelot |
 |---|---|---|
-| Mantenido por | Microsoft, activo | Comunidad, desarrollo más lento |
-| Performance | Alto (sobre Kestrel) | Menor (pipeline propio) |
-| Configuración | Librería — código C# o JSON con reload dinámico | Framework cerrado — 100% `ocelot.json` |
-| Features de fábrica | Ninguna extra (rate limiting/caching se agregan con middleware estándar ASP.NET Core) | Caching, agregación de requests, QoS con Polly, rate limiting propio |
+| Maintained by | Microsoft, active | Community, slower development |
+| Performance | High (on top of Kestrel) | Lower (custom pipeline) |
+| Configuration | Library — C# code or JSON with dynamic reload | Closed framework — 100% `ocelot.json` |
+| Out-of-the-box features | None extra (rate limiting/caching are added with standard ASP.NET Core middleware) | Caching, request aggregation, QoS with Polly, own rate limiting |
 
-Elegido YARP: mejor performance, y al escribir el middleware de JWT nosotros mismos
-entendemos (y podemos explicar) exactamente cómo funciona la validación, en vez de
-depender de configuración "mágica".
+Chosen YARP: better performance, and by writing the JWT middleware ourselves we
+understand (and can explain) exactly how validation works, instead of
+depending on "magic" configuration.
 
-### 4. PostgreSQL (no SQL Server)
-Estándar de facto en microservicios/cloud-native, contenedor liviano, gratis. Buena señal
-de portfolio de no estar atado a un solo vendor (el dev ya domina SQL Server de su
-experiencia profesional).
+### 4. PostgreSQL (not SQL Server)
+De facto standard in microservices/cloud-native, lightweight container, free. Good
+portfolio signal of not being tied to a single vendor (the dev already knows SQL Server
+from professional experience).
 
-### 5. Orders → Notifications: asíncrono vía RabbitMQ (no HTTP directo)
-- **Elegido**: Orders publica evento `OrderCreated`, Notifications lo consume y empuja
-  por SignalR. Desacoplado y resiliente — Orders no depende de que Notifications esté
-  arriba. Patrón real de arquitectura event-driven.
-- **Costo**: suma infraestructura (el broker) y trae temas de consistencia eventual e
-  idempotencia (qué pasa si el mensaje se procesa dos veces).
-- **Alternativa descartada**: HTTP directo sync (más simple, pero acopla los dos
-  servicios en tiempo de ejecución).
+### 5. Orders → Notifications: async via RabbitMQ (not direct HTTP)
+- **Chosen**: Orders publishes an `OrderCreated` event, Notifications consumes it and
+  pushes via SignalR. Decoupled and resilient — Orders doesn't depend on Notifications
+  being up. A real event-driven architecture pattern.
+- **Cost**: adds infrastructure (the broker) and brings eventual consistency and
+  idempotency concerns (what happens if the message is processed twice).
+- **Discarded alternative**: direct sync HTTP (simpler, but couples the two services at
+  runtime).
 
-## Alternativas descartadas de entrada
+## Alternatives discarded upfront
 
-| Alternativa | Por qué no |
+| Alternative | Why not |
 |---|---|
-| Kubernetes en vez de docker-compose | Suma complejidad operativa (manifests, ingress) sin sumar aprendizaje de microservicios en sí. Queda como "próximo paso" mencionado en el README final. |
-| Service mesh (Istio/Linkerd) | Resuelve observability/mTLS a escala de decenas de servicios; con 3 es sobre-ingeniería. |
-| Service discovery dinámico (Consul/Eureka) | En docker-compose el nombre del servicio ya es DNS interno (`http://catalog-api:8080`). Solo aporta valor con múltiples instancias/auto-scaling. |
-| gRPC entre todos los servicios | Mejor performance para tráfico interno alto, pero REST es más fácil de debuggear/explicar para este volumen. Mencionado como "lo haría distinto a mayor escala". |
+| Kubernetes instead of docker-compose | Adds operational complexity (manifests, ingress) without adding microservices-specific learning. Left as a "next step" mentioned in the final README. |
+| Service mesh (Istio/Linkerd) | Solves observability/mTLS at the scale of dozens of services; with 3 it's over-engineering. |
+| Dynamic service discovery (Consul/Eureka) | In docker-compose the service name is already internal DNS (`http://catalog-api:8080`). Only adds value with multiple instances/auto-scaling. |
+| gRPC between all services | Better performance for high internal traffic, but REST is easier to debug/explain at this volume. Mentioned as "would do differently at larger scale". |
 
-## Plan de construcción (bloques)
+## Build plan (blocks)
 
-- [ ] **Bloque 0** — Estructura de solución + skeleton `docker-compose.yml` (Postgres x3, RabbitMQ, sin servicios .NET todavía)
-- [ ] **Bloque 1** — `Users.Api`: registro/login, emisión JWT
-- [ ] **Bloque 2** — `Catalog.Api`: CRUD productos
-- [ ] **Bloque 3** — `Orders.Api`: crea pedidos, consulta Catalog por HTTP
-- [ ] **Bloque 4** — `Gateway` (YARP): enrutamiento + validación JWT centralizada + rate limiting
-- [ ] **Bloque 5** — `Notifications.Api` (SignalR) + integración RabbitMQ (`OrderCreated`)
-- [ ] **Bloque 6** — Dashboard mínimo conectado por SignalR
-- [ ] **Bloque 7** — `docker-compose.yml` completo + README final con diagrama y guía de levantamiento local
+- [x] **Block 0** — Solution structure + `docker-compose.yml` skeleton (Postgres x3, RabbitMQ, no .NET services yet)
+- [ ] **Block 1** — `Users.Api`: registration/login, JWT issuance
+- [ ] **Block 2** — `Catalog.Api`: product CRUD
+- [ ] **Block 3** — `Orders.Api`: creates orders, queries Catalog over HTTP
+- [ ] **Block 4** — `Gateway` (YARP): routing + centralized JWT validation + rate limiting
+- [ ] **Block 5** — `Notifications.Api` (SignalR) + RabbitMQ integration (`OrderCreated`)
+- [ ] **Block 6** — Minimal dashboard connected via SignalR
+- [ ] **Block 7** — Full `docker-compose.yml` + final README with diagram and local setup guide
 
-Después de cada bloque: decisiones de infraestructura tomadas, trade-offs, posibles
-preguntas de entrevista, y 3-4 bullets de "lo que aprendiste" para notas propias.
+After each block: infrastructure decisions made, trade-offs, possible
+interview questions, and 3-4 bullets of "what you learned" for personal notes.
